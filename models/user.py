@@ -28,6 +28,7 @@ class UserBase(BaseModel):
     email: EmailStr
     dob: date
     role: Literal['patient', 'consultant', 'admin'] = 'patient'
+    specialization: Optional[str] = None
 
     @validator('dob')
     def dob_in_past(cls, v: date):
@@ -41,14 +42,20 @@ class UserCreate(UserBase):
     access_code: Optional[str] = None
 
     @root_validator(pre=True)
-    def assign_role_by_access_code(cls, values):
+    def assign_role_and_require_specialization(cls, values):
         code = values.get('access_code')
+        # Assign role based on access code
         if code == '090808':
             values['role'] = 'admin'
         elif code == '070763':
             values['role'] = 'consultant'
         else:
             values['role'] = 'patient'
+        # If consultant, require specialization
+        if values.get('role') == 'consultant':
+            spec = values.get('specialization')
+            if not spec:
+                raise ValueError('specialization is required for consultants')
         return values
 
 

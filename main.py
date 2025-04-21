@@ -26,8 +26,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-from routes import auth
+from routes import auth, bookings
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(bookings.router, prefix="/bookings", tags=["bookings"])
 
 # Startup event: verify database connection
 @app.on_event("startup")
