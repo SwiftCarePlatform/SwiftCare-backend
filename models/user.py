@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field, validator, root_validator
+from typing import Literal, Optional
+from datetime import date
 from bson import ObjectId
 
 
@@ -20,13 +21,35 @@ class PyObjectId(ObjectId):
 
 
 class UserBase(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    mobile_number: str = Field(..., regex=r"^\+?[1-9]\d{1,14}$")
     email: EmailStr
-    first_name: str
-    last_name: str
+    dob: date
+    role: Literal['patient', 'consultant', 'admin'] = 'patient'
+
+    @validator('dob')
+    def dob_in_past(cls, v: date):
+        if v >= date.today():
+            raise ValueError('dob must be in the past')
+        return v
 
 
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(..., min_length=8)
+    access_code: Optional[str] = None
+
+    @root_validator(pre=True)
+    def assign_role_by_access_code(cls, values):
+        code = values.get('access_code')
+        if code == '090808':
+            values['role'] = 'admin'
+        elif code == '070763':
+            values['role'] = 'consultant'
+        else:
+            values['role'] = 'patient'
+        return values
 
 
 class UserInDB(UserBase):
