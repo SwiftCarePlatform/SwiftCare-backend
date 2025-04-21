@@ -51,3 +51,5 @@ async def login(login_req: LoginRequest):
     to_encode = {"sub": str(user_in_db.id), "exp": expire}
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
+
+    return user

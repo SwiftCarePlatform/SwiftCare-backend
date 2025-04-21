@@ -3,9 +3,10 @@ from typing import List, Optional, Literal
 from datetime import datetime
 from bson import ObjectId
 from pydantic import BaseModel, validator
+import random
 
 from models.bookings import BookingCreate, BookingOut
-from models.user import UserInDB
+from models.user import UserInDB, PyObjectId
 from main import db
 
 router = APIRouter()
@@ -24,33 +25,76 @@ SERVICE_SPEC_MAP = {
     'wellness': ['wellness', 'general wellbeing', 'bereavement'],  # bereavement specialists can also do wellness
 }
 
-# --- Create a new booking ---
+# --- Create a new booking (auto-assign consultant if not provided) ---
+class BookingRequest(BaseModel):
+    user_id: str
+    service_type: Literal['bereavement', 'wellness', 'consultation', 'emergency']
+    scheduled_time: datetime
+    consultant_id: Optional[str] = None
+
+    @validator('scheduled_time')
+    def must_be_future(cls, v):
+        if v <= datetime.now(timezone.utc):
+            raise ValueError('scheduled_time must be in the future')
+        return v
+
 @router.post("/", response_model=BookingOut, status_code=status.HTTP_201_CREATED)
-async def create_booking(booking: BookingCreate):
-    # Verify consultant exists and has correct role
-    consultant = await db.users.find_one({"_id": booking.consultant_id})
+async def create_booking(request: BookingRequest):
+    # Convert user_id
+    try:
+        user_obj = get_object_id(request.user_id)
+    except HTTPException:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+    # Determine consultant
+    if request.consultant_id:
+        # use provided consultant
+        try:
+            consultant_obj = get_object_id(request.consultant_id)
+        except HTTPException:
+            raise HTTPException(status_code=400, detail="Invalid consultant_id format")
+    else:
+        # Find eligible consultants
+        spec_list = SERVICE_SPEC_MAP.get(request.service_type, [])
+        # Query consultants with matching specialization
+        cursor = db.users.find({
+            'role': 'consultant',
+            'specialization': {'$in': spec_list}
+        })
+        candidates = []
+        async for cons in cursor:
+            # check no existing booking at that time
+            exists = await db.bookings.find_one({
+                'consultant_id': cons['_id'],
+                'scheduled_time': request.scheduled_time
+            })
+            if not exists:
+                candidates.append(cons)
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No available consultant for this time and service")
+        # Randomly assign one
+        picked = random.choice(candidates)
+        consultant_obj = picked['_id']
+
+    # Validate consultant role and specialization again
+    consultant = await db.users.find_one({'_id': consultant_obj})
     if not consultant or consultant.get('role') != 'consultant':
-        raise HTTPException(status_code=400, detail="Invalid consultant")
-    # Check specialization matches service_type if required
-    spec = consultant.get('specialization', '').lower()
-    stype = booking.service_type
-    if stype in SERVICE_SPEC_MAP:
-        allowed_specs = SERVICE_SPEC_MAP[stype]
-        if spec not in [s.lower() for s in allowed_specs]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Consultant specialization '{consultant.get('specialization')}' does not match service_type '{stype}'"
-            )
-    # Prepare and insert booking
-    doc = booking.dict(by_alias=True)
-    doc['status'] = 'pending'
-    doc['created_at'] = datetime.utcnow()
-    doc['updated_at'] = datetime.utcnow()
+        raise HTTPException(status_code=400, detail="Invalid consultant selected")
+    # Prepare booking document
+    doc = {
+        'user_id': user_obj,
+        'consultant_id': consultant_obj,
+        'service_type': request.service_type,
+        'scheduled_time': request.scheduled_time,
+        'status': 'pending',
+         'created_at': datetime.now(timezone.utc),
+    'updated_at': datetime.now(timezone.utc),
+        'meet_link': None
+    }
     result = await db.bookings.insert_one(doc)
-    created = await db.bookings.find_one({"_id": result.inserted_id})
-    if not created:
+    booking = await db.bookings.find_one({'_id': result.inserted_id})
+    if not booking:
         raise HTTPException(status_code=500, detail="Booking creation failed")
-    return created
+    return booking
 
 # --- List bookings ---
 @router.get("/", response_model=List[BookingOut])
@@ -83,7 +127,7 @@ class BookingUpdate(BaseModel):
 
     @validator('scheduled_time')
     def must_be_future(cls, v: datetime):
-        if v and v <= datetime.utcnow():
+        if v and v <= datetime.now(timezone.utc):
             raise ValueError('scheduled_time must be in the future')
         return v
 
