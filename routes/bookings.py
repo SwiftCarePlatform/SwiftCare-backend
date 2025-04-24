@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from typing import List, Optional, Literal
 from datetime import datetime
 from bson import ObjectId
@@ -8,6 +8,7 @@ import random
 from models.bookings import BookingCreate, BookingOut
 from models.user import UserInDB, PyObjectId
 from main import db
+from services.email_service import email_service
 
 router = APIRouter()
 
@@ -39,7 +40,7 @@ class BookingRequest(BaseModel):
         return v
 
 @router.post("/", response_model=BookingOut, status_code=status.HTTP_201_CREATED)
-async def create_booking(request: BookingRequest):
+async def create_booking(request: BookingRequest, background_tasks: BackgroundTasks):
     # Convert user_id
     try:
         user_obj = get_object_id(request.user_id)
@@ -91,10 +92,31 @@ async def create_booking(request: BookingRequest):
         'meet_link': None
     }
     result = await db.bookings.insert_one(doc)
-    booking = await db.bookings.find_one({'_id': result.inserted_id})
-    if not booking:
-        raise HTTPException(status_code=500, detail="Booking creation failed")
-    return booking
+    created = await db.bookings.find_one({"_id": result.inserted_id})
+    
+    # Get user and consultant details for email
+    user = await db.users.find_one({"_id": user_obj})
+    consultant = await db.users.find_one({"_id": consultant_obj})
+    
+    # Format date and time for email
+    scheduled_time = request.scheduled_time
+    booking_details = {
+        "patient_name": f"{user['first_name']} {user['last_name']}",
+        "appointment_date": scheduled_time.strftime("%B %d, %Y"),
+        "appointment_time": scheduled_time.strftime("%I:%M %p"),
+        "doctor_name": f"Dr. {consultant['first_name']} {consultant['last_name']}",
+        "service_type": request.service_type.title(),
+        "booking_id": str(result.inserted_id)
+    }
+    
+    # Send confirmation email in background
+    background_tasks.add_task(
+        email_service.send_booking_confirmation,
+        user["email"],
+        booking_details
+    )
+    
+    return created
 
 # --- List bookings ---
 @router.get("/", response_model=List[BookingOut])
@@ -132,7 +154,7 @@ class BookingUpdate(BaseModel):
         return v
 
 @router.put("/{booking_id}", response_model=BookingOut)
-async def update_booking(booking_id: str, update: BookingUpdate):
+async def update_booking(booking_id: str, update: BookingUpdate, background_tasks: BackgroundTasks):
     oid = get_object_id(booking_id)
     existing = await db.bookings.find_one({"_id": oid})
     if not existing:
@@ -145,13 +167,25 @@ async def update_booking(booking_id: str, update: BookingUpdate):
     if result.modified_count != 1:
         raise HTTPException(status_code=500, detail="Booking update failed")
     booking = await db.bookings.find_one({"_id": oid})
+    
+
+    
     return booking
 
 # --- Cancel a booking ---
 @router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_booking(booking_id: str):
+async def cancel_booking(booking_id: str, background_tasks: BackgroundTasks):
     oid = get_object_id(booking_id)
-    result = await db.bookings.update_one({"_id": oid}, {"$set": {"status": "cancelled", "updated_at": datetime.utcnow()}})
-    if result.matched_count != 1:
+    # Get booking details before updating
+    existing = await db.bookings.find_one({"_id": oid})
+    if not existing:
         raise HTTPException(status_code=404, detail="Booking not found")
+        
+    result = await db.bookings.update_one(
+        {"_id": oid}, 
+        {"$set": {"status": "cancelled", "updated_at": datetime.utcnow()}}
+    )
+    
+
+    
     return None

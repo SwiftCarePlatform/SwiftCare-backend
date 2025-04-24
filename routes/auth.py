@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 import jwt, os, datetime
 
 from models.user import UserCreate, UserInDB, UserOut
 from main import db
+from services.email_service import email_service
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ class LoginRequest(BaseModel):
     password: str
 
 @router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def signup(user: UserCreate):
+async def signup(user: UserCreate, background_tasks: BackgroundTasks):
     existing = await db.users.find_one({"email": user.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -37,6 +38,14 @@ async def signup(user: UserCreate):
         doc['dob'] = datetime.datetime(dob.year, dob.month, dob.day)
     result = await db.users.insert_one(doc)
     created = await db.users.find_one({"_id": result.inserted_id})
+    
+    # Send welcome email in the background
+    background_tasks.add_task(
+        email_service.send_welcome_email,
+        user.email,
+        user.first_name
+    )
+    
     return created
 
 @router.post("/login", response_model=Token)
