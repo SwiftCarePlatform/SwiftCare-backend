@@ -1,9 +1,13 @@
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from typing import List, Optional, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 from pydantic import BaseModel, validator
 import random
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 from models.bookings import BookingCreate, BookingOut
 from models.user import UserInDB, PyObjectId
@@ -37,6 +41,12 @@ class BookingRequest(BaseModel):
     def must_be_future(cls, v):
         if v <= datetime.now(timezone.utc):
             raise ValueError('scheduled_time must be in the future')
+        return v
+        
+    @validator('scheduled_time', pre=True)
+    def ensure_timezone(cls, v):
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
         return v
 
 @router.post("/", response_model=BookingOut, status_code=status.HTTP_201_CREATED)
@@ -87,8 +97,8 @@ async def create_booking(request: BookingRequest, background_tasks: BackgroundTa
         'service_type': request.service_type,
         'scheduled_time': request.scheduled_time,
         'status': 'pending',
-         'created_at': datetime.now(timezone.utc),
-    'updated_at': datetime.now(timezone.utc),
+        'created_at': datetime.now(timezone.utc),
+        'updated_at': datetime.now(timezone.utc),
         'meet_link': None
     }
     result = await db.bookings.insert_one(doc)
@@ -110,11 +120,15 @@ async def create_booking(request: BookingRequest, background_tasks: BackgroundTa
     }
     
     # Send confirmation email in background
-    background_tasks.add_task(
-        email_service.send_booking_confirmation,
-        user["email"],
-        booking_details
-    )
+    try:
+        background_tasks.add_task(
+            email_service.send_booking_confirmation,
+            user["email"],
+            booking_details
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue email task: {str(e)}")
+        # Continue with the booking creation even if email fails
     
     return created
 
@@ -162,7 +176,7 @@ async def update_booking(booking_id: str, update: BookingUpdate, background_task
     update_data = {k: v for k, v in update.dict().items() if v is not None}
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid fields to update")
-    update_data['updated_at'] = datetime.utcnow()
+    update_data['updated_at'] = datetime.now(timezone.utc)
     result = await db.bookings.update_one({"_id": oid}, {"$set": update_data})
     if result.modified_count != 1:
         raise HTTPException(status_code=500, detail="Booking update failed")
@@ -183,7 +197,7 @@ async def cancel_booking(booking_id: str, background_tasks: BackgroundTasks):
         
     result = await db.bookings.update_one(
         {"_id": oid}, 
-        {"$set": {"status": "cancelled", "updated_at": datetime.utcnow()}}
+        {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc)}}
     )
     
 

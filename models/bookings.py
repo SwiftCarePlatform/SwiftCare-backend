@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, validator
 from typing import Literal, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 
 from models.user import PyObjectId
@@ -15,8 +15,14 @@ class BookingBase(BaseModel):
 
     @validator('scheduled_time')
     def must_be_future(cls, v: datetime):
-        if v <= datetime.utcnow():
+        if v <= datetime.now(timezone.utc):
             raise ValueError('scheduled_time must be in the future')
+        return v
+        
+    @validator('scheduled_time', pre=True)
+    def ensure_timezone(cls, v: datetime):
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
         return v
 
 
@@ -27,8 +33,8 @@ class BookingCreate(BookingBase):
 class BookingInDB(BookingBase):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     status: Literal['pending', 'confirmed', 'completed', 'cancelled'] = 'pending'
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         allow_population_by_field_name = True

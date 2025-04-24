@@ -12,11 +12,15 @@ load_dotenv()
 class EmailService:
     def __init__(self):
         # Load environment variables with defaults
-        self.emailjs_user_id = os.getenv("EMAILJS_USER_ID", "UyXYMghIo7-5Eu8nr")
-        self.emailjs_service_id = os.getenv("EMAILJS_SERVICE_ID", "service_swiftcare")
-        self.welcome_template_id = os.getenv("EMAILJS_WELCOME_TEMPLATE", "template_471tdx8")
-        self.booking_template_id = os.getenv("EMAILJS_BOOKING_TEMPLATE", "template_vbk708m")
+        self.emailjs_user_id = os.getenv("EMAILJS_USER_ID")
+        self.emailjs_service_id = os.getenv("EMAILJS_SERVICE_ID")
+        self.emailjs_private_key = os.getenv("EMAILJS_PRIVATE_KEY")
+        self.welcome_template_id = os.getenv("EMAILJS_WELCOME_TEMPLATE")
+        self.booking_template_id = os.getenv("EMAILJS_BOOKING_TEMPLATE")
         self.api_url = "https://api.emailjs.com/api/v1.0/email/send"
+        
+        if not self.emailjs_private_key:
+            logger.warning("EMAILJS_PRIVATE_KEY environment variable is not set. Email sending may fail.")
 
     async def send_email(
         self,
@@ -33,10 +37,18 @@ class EmailService:
                     "template_params": {
                         **template_params,
                         "to_email": to_email
-                    }
+                    },
+                    "accessToken": self.emailjs_private_key
                 }
 
-                async with session.post(self.api_url, json=payload) as response:
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                
+                if self.emailjs_private_key:
+                    headers["Authorization"] = f"Bearer {self.emailjs_private_key}"
+
+                async with session.post(self.api_url, json=payload, headers=headers) as response:
                     if response.status == 200:
                         logger.info(f"Email sent successfully to {to_email}")
                         return True
@@ -49,9 +61,10 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
 
-    async def send_welcome_email(self, user_email: str, first_name: str):
+    async def send_welcome_email(self, user_email: str, first_name: str, last_name: str = ""):
         template_params = {
             "first_name": first_name,
+            "full_name": f"{first_name} {last_name}".strip(),
             "email": user_email
         }
         

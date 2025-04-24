@@ -2,6 +2,10 @@ from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 import jwt, os, datetime
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 from models.user import UserCreate, UserInDB, UserOut
 from main import db
@@ -40,11 +44,16 @@ async def signup(user: UserCreate, background_tasks: BackgroundTasks):
     created = await db.users.find_one({"_id": result.inserted_id})
     
     # Send welcome email in the background
-    background_tasks.add_task(
-        email_service.send_welcome_email,
-        user.email,
-        user.first_name
-    )
+    try:
+        background_tasks.add_task(
+            email_service.send_welcome_email,
+            user.email,
+            user.first_name,
+            user.last_name
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue welcome email task: {str(e)}")
+        # Continue with user creation even if email fails
     
     return created
 
