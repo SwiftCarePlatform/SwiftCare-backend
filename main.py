@@ -51,9 +51,10 @@ app.add_middleware(
 # Add timezone middleware
 app.add_middleware(TimezoneMiddleware)
 
-from routes import auth, bookings
+from routes import auth, bookings, payments
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(bookings.router, prefix="/bookings", tags=["bookings"])
+app.include_router(payments.router)
 
 # Startup event: verify database connection
 @app.on_event("startup")
