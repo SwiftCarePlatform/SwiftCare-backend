@@ -1,11 +1,9 @@
 from fastapi import FastAPI
-from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 import logging
 from datetime import datetime, timezone
-from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from pydantic import BaseModel
 
 # Load environment variables from .env
@@ -33,12 +31,10 @@ class TimezoneMiddleware:
 
         return await self.app(scope, receive_with_timezone, send)
 
-app = FastAPI(title="SwiftCare API")
+# Import database module - this should be used by all routes
+from database import db, test_connection
 
-# MongoDB client - default database 'swiftcaredb'
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-mongo_client = AsyncIOMotorClient(mongo_uri)
-db = mongo_client.get_database("swiftcaredb")  # shorthand for mongo_client.swiftcaredb
+app = FastAPI(title="SwiftCare API")
 
 # CORS configuration (adjust origins in production)
 app.add_middleware(
@@ -51,23 +47,25 @@ app.add_middleware(
 # Add timezone middleware
 app.add_middleware(TimezoneMiddleware)
 
-from routes import auth, bookings, payments
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(bookings.router, prefix="/bookings", tags=["bookings"])
-app.include_router(payments.router)
+# Health-check endpoint
+@app.get("/", summary="Health check endpoint")
+async def root():
+    return {"message": "API is running"}
 
 # Startup event: verify database connection
 @app.on_event("startup")
 async def connect_to_db():
-    try:
-        # The ping command is cheap and does not require auth
-        await mongo_client.admin.command("ping")
-        logger.info("Successfully connected to MongoDB at %s", mongo_uri)
-    except Exception as e:
-        logger.error("Failed to connect to MongoDB: %s", e)
-        raise
+    await test_connection()
 
-# Health-check endpoint
-@app.get("/", summary="Health check endpoint")
-async def root():
-    return {"message": "MongoDB connection is healthy"}
+# Import and include routers
+from routes import auth, bookings
+# Commenting out payments to isolate payment features
+# from routes import payments
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(bookings.router, prefix="/bookings", tags=["bookings"])
+# app.include_router(payments.router)
+
+# Add this block to run the app directly with python3 main.py
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)

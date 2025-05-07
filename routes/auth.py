@@ -1,14 +1,21 @@
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 import jwt, os, datetime
 import logging
+from fastapi.security import OAuth2PasswordBearer
+import sys
+import os
+
+# Add parent directory to path to allow imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 from models.user import UserCreate, UserInDB, UserOut
-from main import db
+# Import db from database module instead of main to avoid circular imports
+from database import db
 from services.email_service import email_service
 
 router = APIRouter()
@@ -20,6 +27,8 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET", "change_this_secret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 class Token(BaseModel):
     access_token: str
@@ -70,4 +79,27 @@ async def login(login_req: LoginRequest):
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
 
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+        
+        # Check token expiration
+        exp = payload.get("exp")
+        if not exp or datetime.datetime.utcnow() > datetime.datetime.fromtimestamp(exp):
+            raise credentials_exception
+            
+    except jwt.PyJWTError:
+        raise credentials_exception
+        
+    user = await db.users.find_one({"_id": user_id})
+    if user is None:
+        raise credentials_exception
     return user

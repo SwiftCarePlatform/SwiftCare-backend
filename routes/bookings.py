@@ -5,13 +5,19 @@ from bson import ObjectId
 from pydantic import BaseModel, validator
 import random
 import logging
+import sys
+import os
+
+# Add parent directory to path to allow imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 from models.bookings import BookingCreate, BookingOut
 from models.user import UserInDB, PyObjectId
-from main import db
+# Import db from database module instead of main to avoid circular imports
+from database import db
 from services.email_service import email_service
 
 router = APIRouter()
