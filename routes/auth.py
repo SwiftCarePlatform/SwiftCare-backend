@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends
-from pydantic import BaseModel, EmailStr, Field, validator, constr
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends, Request
+from pydantic import BaseModel, EmailStr, Field, field_validator
 import bcrypt
 import jwt, os, datetime
 import logging
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import sys
 import os
 from typing import Optional
@@ -30,6 +30,9 @@ SECRET_KEY = os.getenv("JWT_SECRET", "change_this_secret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
 
 class Token(BaseModel):
     access_token: str
@@ -46,8 +49,20 @@ class UserCreate(BaseModel):
     password: str = Field(
         min_length=8,
         max_length=MAX_PASSWORD_LENGTH,
-        pattern=r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]$"
+        pattern=r"^[A-Za-z\d@$!%*?&]{8,}$"
     )
+    
+    @field_validator('password')
+    def validate_password(cls, v):
+        if not any(c.isupper() for c in v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not any(c.islower() for c in v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not any(c.isdigit() for c in v):
+            raise ValueError('Password must contain at least one digit')
+        if not any(c in "@$!%*?&" for c in v):
+            raise ValueError('Password must contain at least one special character (@$!%*?&)')
+        return v
 
 @router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def signup(user: UserCreate, background_tasks: BackgroundTasks):
