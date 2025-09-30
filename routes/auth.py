@@ -41,10 +41,12 @@ class LoginRequest(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: constr(
+    first_name: str
+    last_name: str
+    password: str = Field(
         min_length=8,
         max_length=MAX_PASSWORD_LENGTH,
-        regex=r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]$",
+        pattern=r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]$"
     )
 
 @router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
