@@ -3,19 +3,20 @@ from typing import Literal, Optional, Any
 from datetime import date
 from bson import ObjectId
 
-
-from pydantic import GetCoreSchemaHandler
-from pydantic_core import core_schema
+# Pydantic version compatibility
+try:
+    # Pydantic v2
+    from pydantic_core import core_schema
+    from pydantic import GetCoreSchemaHandler
+    PYDANTIC_V2 = True
+except ImportError:
+    # Pydantic v1
+    PYDANTIC_V2 = False
 
 class PyObjectId(ObjectId):
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, _source_type: Any, _handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        return core_schema.union_schema([
-            core_schema.is_instance_schema(ObjectId),
-            core_schema.no_info_plain_validator_function(cls.validate),
-        ])
+    def __get_validators__(cls):
+        yield cls.validate
 
     @classmethod
     def validate(cls, v) -> ObjectId:
@@ -25,9 +26,20 @@ class PyObjectId(ObjectId):
             raise ValueError("Invalid ObjectId")
         return ObjectId(v)
 
-    @classmethod
-    def __get_pydantic_json_schema__(cls, _core_schema, handler):
-        return handler(core_schema.str_schema())
+    # Pydantic v2 compatibility
+    if PYDANTIC_V2:
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: GetCoreSchemaHandler
+        ) -> core_schema.CoreSchema:
+            return core_schema.union_schema([
+                core_schema.is_instance_schema(ObjectId),
+                core_schema.no_info_plain_validator_function(cls.validate),
+            ])
+
+        @classmethod
+        def __get_pydantic_json_schema__(cls, _core_schema, handler):
+            return handler(core_schema.str_schema())
 
 
 class UserBase(BaseModel):
