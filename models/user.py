@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, validator, root_validator
 from typing import Literal, Optional, Any
-from datetime import date
+from datetime import date, datetime
 from bson import ObjectId
 
 # Pydantic version compatibility
@@ -48,14 +48,14 @@ class UserBase(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=50)
     mobile_number: str = Field(..., pattern=r"^\+?[1-9]\d{1,14}$")
     email: EmailStr
-    dob: date
+    date_of_birth: date
     role: Literal['patient', 'consultant', 'admin'] = 'patient'
     specialization: Optional[str] = None
 
-    @validator('dob')
-    def dob_in_past(cls, v: date):
+    @validator('date_of_birth')
+    def date_of_birth_in_past(cls, v: date):
         if v >= date.today():
-            raise ValueError('dob must be in the past')
+            raise ValueError('Date of birth must be in the past')
         return v
 
 
@@ -84,13 +84,15 @@ class UserCreate(UserBase):
 class UserInDB(UserBase):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     hashed_password: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    is_active: bool = True
+    is_verified: bool = False
 
-    model_config = {
-        "populate_by_name": True,
-        "arbitrary_types_allowed": True,
-        "json_encoders": {ObjectId: str}
-    }
-
+    class Config:
+        json_encoders = {ObjectId: str}
+        arbitrary_types_allowed = True
+        populate_by_name = True
 
 class UserOut(UserBase):
     id: PyObjectId = Field(alias="_id")
