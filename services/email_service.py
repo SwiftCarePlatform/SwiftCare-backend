@@ -54,9 +54,10 @@ class EmailService:
                     "Content-Type": "application/json"
                 }
                 
-                if self.emailjs_private_key:
-                    payload["accessToken"] = self.emailjs_private_key
-                    headers["Authorization"] = f"Bearer {self.emailjs_private_key}"
+                # For non-strict mode, we only need the user_id in the payload
+                # No need for private key or accessToken
+                if "accessToken" in payload:
+                    del payload["accessToken"]
 
                 async with session.post(self.api_url, json=payload, headers=headers) as response:
                     if response.status == 200:
