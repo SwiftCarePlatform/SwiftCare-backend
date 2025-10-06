@@ -72,16 +72,30 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
 
-    async def send_welcome_email(self, user_email: str, first_name: str, last_name: str = ""):
+    async def send_welcome_email(self, user_email: str, first_name: str, last_name: str = "", username: str = "", password: str = ""):
+        """
+        Send a welcome email with login details
+        
+        Args:
+            user_email (str): User's email address
+            first_name (str): User's first name
+            last_name (str, optional): User's last name. Defaults to "".
+            username (str, optional): User's username. Defaults to "".
+            password (str, optional): Password. Defaults to "".
+        """
         template_params = {
             "first_name": first_name,
             "full_name": f"{first_name} {last_name}".strip(),
-            "email": user_email
+            "email": user_email,
+            "username": username or user_email.split('@')[0],
+            "password": password,
+            "login_url": "https://swiftcare.com/login"
         }
         
         # Use default template ID if not configured
         template_id = self.welcome_template_id or "welcome_template"
         
+        # Send the email with the template that includes login details
         await self.send_email(
             template_id=template_id,
             template_params=template_params,
