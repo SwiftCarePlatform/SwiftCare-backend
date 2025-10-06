@@ -18,3 +18,4 @@ python-paystack==1.0.0
 httpx==0.24.1
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
+python-jose[cryptography]>=3.3.0
