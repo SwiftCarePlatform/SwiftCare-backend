@@ -50,7 +50,7 @@ async def test_connection():
             tlsAllowInvalidCertificates=True  # Disable SSL certificate verification
         )
         await mongo_client.admin.command("ping")
-        logger.info("Successfully connected to MongoDB")
+        logger.info(" backend up Successfully connected to MongoDB")
         return True
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {str(e)}")

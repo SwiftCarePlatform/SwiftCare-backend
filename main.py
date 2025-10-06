@@ -58,11 +58,12 @@ async def connect_to_db():
     await test_connection()
 
 # Import and include routers
-from routes import auth, bookings
+from routes import auth, bookings, doctors
 # Commenting out payments to isolate payment features
 # from routes import payments
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(bookings.router, prefix="/bookings", tags=["bookings"])
+app.include_router(doctors.router)
 # app.include_router(payments.router)
 
 # Add this block to run the app directly with python3 main.py

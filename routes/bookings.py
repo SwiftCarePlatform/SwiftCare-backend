@@ -1,12 +1,13 @@
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks
-from typing import List, Optional, Literal
-from datetime import datetime, timezone
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends
+from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime, timezone, timedelta
 from bson import ObjectId
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, Field
 import random
 import logging
 import sys
 import os
+from auth_utils import get_current_active_user, UserRole
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -96,16 +97,34 @@ async def create_booking(request: BookingRequest, background_tasks: BackgroundTa
     consultant = await db.users.find_one({'_id': consultant_obj})
     if not consultant or consultant.get('role') != 'consultant':
         raise HTTPException(status_code=400, detail="Invalid consultant selected")
+    # Create meeting for virtual consultations
+    meet_link = None
+    if request.service_type == 'virtual':
+        try:
+            meeting = await meeting_service.create_meeting(
+                title=f"Consultation with {user['first_name']} {user['last_name']}",
+                duration_minutes=request.duration_minutes,
+                start_time=request.scheduled_time
+            )
+            meet_link = meeting['join_url']
+        except Exception as e:
+            logger.error(f"Failed to create meeting: {str(e)}")
+            # Continue without meeting link if virtual meeting creation fails
+
     # Prepare booking document
     doc = {
         'user_id': user_obj,
         'consultant_id': consultant_obj,
         'service_type': request.service_type,
         'scheduled_time': request.scheduled_time,
+        'duration_minutes': request.duration_minutes,
         'status': 'pending',
         'created_at': datetime.now(timezone.utc),
         'updated_at': datetime.now(timezone.utc),
-        'meet_link': None
+        'meet_link': meet_link,
+        'notes': request.notes,
+        'is_virtual': request.service_type == 'virtual',
+        'meeting_details': meeting if request.service_type == 'virtual' else None
     }
     result = await db.bookings.insert_one(doc)
     created = await db.bookings.find_one({"_id": result.inserted_id})
@@ -166,30 +185,41 @@ class BookingUpdate(BaseModel):
     scheduled_time: Optional[datetime] = None
     meet_link: Optional[str] = None
     status: Optional[Literal['pending', 'confirmed', 'completed', 'cancelled']] = None
+    notes: Optional[str] = None
+    is_virtual: Optional[bool] = None
+    duration_minutes: Optional[int] = Field(None, gt=0, le=240)
+    
+    @validator('scheduled_time')
+    def validate_scheduled_time(cls, v):
+        if v and v <= datetime.now(timezone.utc):
+            raise ValueError('scheduled_time must be in the future')
+        return v
 
     @validator('scheduled_time')
-    def must_be_future(cls, v: datetime):
+    def must_be_future(cls, v):
         if v and v <= datetime.now(timezone.utc):
             raise ValueError('scheduled_time must be in the future')
         return v
 
 @router.put("/{booking_id}", response_model=BookingOut)
-async def update_booking(booking_id: str, update: BookingUpdate, background_tasks: BackgroundTasks):
+async def update_booking(
+    booking_id: str, 
+    update: BookingUpdate, 
+    background_tasks: BackgroundTasks,
+    current_user: UserInDB = Depends(get_current_active_user)
+):
     oid = get_object_id(booking_id)
     existing = await db.bookings.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Booking not found")
-    update_data = {k: v for k, v in update.dict().items() if v is not None}
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No valid fields to update")
-    update_data['updated_at'] = datetime.now(timezone.utc)
-    result = await db.bookings.update_one({"_id": oid}, {"$set": update_data})
-    if result.modified_count != 1:
-        raise HTTPException(status_code=500, detail="Booking update failed")
-    booking = await db.bookings.find_one({"_id": oid})
-    
-
-    
+    # Authorization check
+    if (str(current_user.id) != str(existing.get('user_id')) and 
+        str(current_user.id) != str(existing.get('consultant_id')) and 
+        current_user.role != 'admin'):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this booking"
+        )
     return booking
 
 # --- Cancel a booking ---

@@ -1,14 +1,15 @@
-from datetime import datetime, date
-from typing import Optional, Dict, Any, Literal
+from datetime import datetime, date, timedelta
+from typing import Optional, Dict, Any, Literal, Union
 import bcrypt
 import jwt
 import os
 import logging
 import sys
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends, Request, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field, field_validator, validator
 from bson import ObjectId
+from jose import JWTError, jwt
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,9 +40,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-    email: EmailStr
-    password: str
+    user: Dict[str, Any]
+    expires_in: int
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -163,6 +163,76 @@ async def signup(user: UserCreate, background_tasks: BackgroundTasks, request: R
     
     return UserOut(**created_user)
 
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt, expire
+
+async def authenticate_user(username: str, password: str):
+    user = await db.users.find_one({"$or": [{"username": username}, {"email": username}]})
+    if not user:
+        return False
+    if not bcrypt.checkpw(password.encode('utf-8'), user["hashed_password"].encode('utf-8')):
+        return False
+    return user
+
+@router.post("/login", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: Request = None
+):
+    # Log incoming request
+    logger.info(f"Login attempt for username: {form_data.username}")
+    
+    # Authenticate user
+    user = await authenticate_user(form_data.username, form_data.password)
+    if not user:
+        logger.warning(f"Failed login attempt for username: {form_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if user is active
+    if not user.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user"
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token, expires_at = create_access_token(
+        data={"sub": str(user["_id"])},
+        expires_delta=access_token_expires
+    )
+    
+    # Prepare user data for response (exclude sensitive info)
+    user_data = {
+        "id": str(user["_id"]),
+        "username": user["username"],
+        "email": user["email"],
+        "first_name": user["first_name"],
+        "last_name": user["last_name"],
+        "role": user["role"],
+        "is_verified": user.get("is_verified", False)
+    }
+    
+    logger.info(f"Successful login for user: {user['username']}")
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_data,
+        "expires_in": int(access_token_expires.total_seconds())
+    }
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -174,16 +244,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         user_id = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-        
+            
         # Check token expiration
         exp = payload.get("exp")
-        if not exp or datetime.datetime.utcnow() > datetime.datetime.fromtimestamp(exp):
+        if not exp or datetime.utcnow() > datetime.fromtimestamp(exp):
             raise credentials_exception
             
-    except jwt.PyJWTError:
+    except (JWTError, jwt.PyJWTError) as e:
+        logger.error(f"JWT Error: {str(e)}")
         raise credentials_exception
         
-    user = await db.users.find_one({"_id": user_id})
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
     if user is None:
         raise credentials_exception
+        
+    # Convert ObjectId to string for JSON serialization
+    user["id"] = str(user["_id"])
     return user
