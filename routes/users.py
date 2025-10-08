@@ -3,21 +3,25 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
+import os
+import logging
 
 from database import db
 from models.user import UserOut, PyObjectId
 
-router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+# Initialize logger
+logger = logging.getLogger(__name__)
 
-# Get JWT secret from environment variables
-import os
-from dotenv import load_dotenv
-load_dotenv()
-JWT_SECRET = os.getenv("JWT_SECRET")
+router = APIRouter()
+
+# Get JWT settings from environment
+SECRET_KEY = os.getenv("JWT_SECRET", "change_this_secret")
 ALGORITHM = "HS256"
+
+# OAuth2 scheme - must match the one in auth.py
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
     credentials_exception = HTTPException(
@@ -26,16 +30,32 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        # Decode the JWT token
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
             raise credentials_exception
-    except JWTError:
+            
+        # Check token expiration
+        exp = payload.get("exp")
+        if not exp or datetime.now(timezone.utc).timestamp() > exp:
+            raise credentials_exception
+            
+    except (JWTError, jwt.PyJWTError) as e:
+        logger.error(f"JWT Error: {str(e)}")
         raise credentials_exception
     
-    user = await db["users"].find_one({"$or": [{"username": username}, {"email": username}]})
+    # Get user from database using the user_id from the token
+    try:
+        user = await db["users"].find_one({"_id": ObjectId(user_id)})
+    except:
+        raise credentials_exception
+        
     if user is None:
         raise credentials_exception
+        
+    # Convert ObjectId to string for JSON serialization
+    user["id"] = str(user["_id"])
     return user
 
 @router.get("/me", response_model=UserOut)
