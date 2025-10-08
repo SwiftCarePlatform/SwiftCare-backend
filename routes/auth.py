@@ -287,6 +287,22 @@ async def authenticate_user(username: str, password: str) -> Optional[Dict[str, 
         logger.error(f"Authentication error for user {username}: {str(e)}", exc_info=True)
         return None
 
+class LoginError(HTTPException):
+    def __init__(self, 
+        status_code: int, 
+        error_code: str, 
+        detail: str, 
+        headers: Optional[Dict[str, str]] = None
+    ):
+        super().__init__(
+            status_code=status_code,
+            detail={
+                "error": error_code,
+                "message": detail
+            },
+            headers=headers or {}
+        )
+
 @router.post("/login", response_model=Token)
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -299,48 +315,117 @@ async def login_for_access_token(
     - **password**: Your password
     
     Returns an access token and user information.
+    
+    Error Responses:
+    - 400: Invalid request format
+    - 401: Invalid credentials
+    - 403: Account inactive, email not verified, or access denied
+    - 423: Account locked
+    - 429: Too many login attempts
+    - 500: Internal server error
     """
     client_ip = request.client.host if request and request.client else "unknown"
+    user_agent = request.headers.get("User-Agent", "unknown")
     
     try:
-        # Rate limiting check
-        await check_rate_limit(
-            f"{client_ip}:{form_data.username}", 
-            "login", 
-            max_attempts=5, 
-            window=LOGIN_WINDOW
-        )
+        # Input validation
+        if not form_data.username or not form_data.password:
+            raise LoginError(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error_code="missing_credentials",
+                detail="Both username and password are required"
+            )
+            
+        # Rate limiting check (separate for IP and username to prevent enumeration)
+        try:
+            await check_rate_limit(
+                f"login:ip:{client_ip}",
+                "login_ip",
+                max_attempts=10,
+                window=300  # 5 minutes
+            )
+            await check_rate_limit(
+                f"login:user:{form_data.username.lower()}",
+                "login_user",
+                max_attempts=5,
+                window=300  # 5 minutes
+            )
+        except RateLimitExceeded as e:
+            logger.warning(f"Rate limit exceeded - IP: {client_ip}, Username: {form_data.username}")
+            retry_after = int(e.retry_after_seconds)
+            raise LoginError(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                error_code="too_many_attempts",
+                detail=f"Too many login attempts. Please try again in {retry_after} seconds.",
+                headers={"Retry-After": str(retry_after)}
+            )
         
         # Log login attempt
-        logger.info(f"Login attempt - IP: {client_ip}, Username: {form_data.username}")
+        logger.info(f"Login attempt - IP: {client_ip}, User-Agent: {user_agent}, Username: {form_data.username}")
         
         # Authenticate user
-        user = await authenticate_user(form_data.username, form_data.password)
-        if not user:
-            logger.warning(f"Failed login - IP: {client_ip}, Username: {form_data.username}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
+        try:
+            user = await authenticate_user(form_data.username, form_data.password)
+            if not user:
+                raise LoginError(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    error_code="invalid_credentials",
+                    detail="Incorrect username or password"
+                )
+                
+            # Check if account is locked
+            if user.get("login_attempts", 0) >= 5 and user.get("lock_until", datetime.min) > datetime.utcnow():
+                lock_time = (user["lock_until"] - datetime.utcnow()).seconds // 60
+                raise LoginError(
+                    status_code=status.HTTP_423_LOCKED,
+                    error_code="account_locked",
+                    detail=f"Account locked due to too many failed attempts. Try again in {lock_time} minutes."
+                )
+            
+            # Check if user is active
+            if not user.get("is_active", True):
+                raise LoginError(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    error_code="account_inactive",
+                    detail="This account has been deactivated. Please contact support for assistance."
+                )
+            
+            # Check if email is verified
+            if not user.get("is_verified", False):
+                raise LoginError(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    error_code="email_not_verified",
+                    detail="Please verify your email address before logging in. Check your inbox for the verification link."
+                )
+                
+            # Reset failed login attempts on successful login
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"login_attempts": 0, "last_login": datetime.utcnow()}}
             )
-        
-        # Check if user is active
-        if not user.get("is_active", True):
-            logger.warning(f"Login attempt for inactive user - Username: {form_data.username}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive. Please contact support.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
-        # Check if email is verified
-        if not user.get("is_verified", False):
-            logger.warning(f"Login attempt with unverified email - Username: {form_data.username}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Email not verified. Please check your email for verification instructions.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            
+        except LoginError:
+            # Update failed login attempts
+            if user and "_id" in user:
+                await db.users.update_one(
+                    {"_id": user["_id"]},
+                    [
+                        {
+                            "$set": {
+                                "login_attempts": {"$add": ["$login_attempts", 1]},
+                                "last_failed_attempt": datetime.utcnow(),
+                                "lock_until": {
+                                    "$cond": [
+                                        {"$gte": ["$login_attempts", 4]},  # After 5th failed attempt
+                                        {"$add": ["$$NOW", 30 * 60 * 1000]},  # Lock for 30 minutes
+                                        None
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                )
+            raise
         
         # Create access token
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -349,7 +434,7 @@ async def login_for_access_token(
             expires_delta=access_token_expires
         )
         
-        # Prepare user data for response (exclude sensitive info)
+        # Prepare user data for response
         user_data = {
             "id": str(user["_id"]),
             "username": user["username"],
@@ -363,11 +448,19 @@ async def login_for_access_token(
         # Log successful login
         logger.info(f"Successful login - User ID: {user_data['id']}, IP: {client_ip}")
         
+        # Add security headers
+        response_headers = {
+            "X-Frame-Options": "DENY",
+            "X-Content-Type-Options": "nosniff",
+            "X-XSS-Protection": "1; mode=block"
+        }
+        
         return {
             "access_token": access_token,
             "token_type": "bearer",
             "user": user_data,
             "expires_in": int(access_token_expires.total_seconds())
+        }
         }
         
     except HTTPException:
