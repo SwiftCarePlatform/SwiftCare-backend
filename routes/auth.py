@@ -71,51 +71,124 @@ class UserCreate(BaseModel):
             raise ValueError('Password must contain at least one special character (@$!%*?&)')
         return v
 
-@router.post("/signup", response_model=UserOut)
-async def signup(user: UserCreate, background_tasks: BackgroundTasks, request: Request = None):
-    # Log incoming request details for debugging
-    logger.info(f"Incoming request: {request.method} {request.url}")
-    if request:
-        body = await request.body()
-        logger.info(f"Request body: {body.decode() if body else 'Empty body'}")
-    
-    # Check if user already exists
-    existing_user = await db.users.find_one({"$or": [
-        {"email": user.email},
-        {"username": user.username}
-    ]})
-    if existing_user:
-        raise HTTPException(
+# Rate limiting and security settings
+MAX_SIGNUP_ATTEMPTS = 5
+SIGNUP_WINDOW = 3600  # 1 hour in seconds
+LOGIN_ATTEMPTS = {}
+LOGIN_WINDOW = 300  # 5 minutes in seconds
+
+class UserExistsError(HTTPException):
+    def __init__(self, field: str, value: str):
+        super().__init__(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email or username already registered"
+            detail=f"User with this {field} already exists: {value}"
         )
 
-    # Hash the password
-    password_bytes = user.password.encode('utf-8')
-    hashed_pw = bcrypt.hashpw(password_bytes, bcrypt.gensalt(BCRYPT_SALT_ROUNDS)).decode('utf-8')
+class RateLimitExceeded(HTTPException):
+    def __init__(self, retry_after: int):
+        super().__init__(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "rate_limit_exceeded",
+                "message": "Too many requests. Please try again later.",
+                "retry_after_seconds": retry_after
+            },
+            headers={"Retry-After": str(retry_after)}
+        )
+
+async def check_rate_limit(ip: str, endpoint: str, max_attempts: int, window: int):
+    """Check if the request exceeds the rate limit."""
+    current_time = datetime.utcnow().timestamp()
+    key = f"{ip}:{endpoint}"
     
-    # Prepare user data for database
-    user_dict = user.dict(exclude={"password", "access_code"})
-    user_dict["hashed_password"] = hashed_pw
-    user_dict["created_at"] = datetime.utcnow()
-    user_dict["updated_at"] = datetime.utcnow()
-    user_dict["is_active"] = True
-    user_dict["is_verified"] = False
+    if key in LOGIN_ATTEMPTS:
+        attempts = [t for t in LOGIN_ATTEMPTS[key] if current_time - t < window]
+        if len(attempts) >= max_attempts:
+            retry_after = int(window - (current_time - attempts[0]))
+            raise RateLimitExceeded(retry_after)
+        attempts.append(current_time)
+        LOGIN_ATTEMPTS[key] = attempts
+    else:
+        LOGIN_ATTEMPTS[key] = [current_time]
+
+@router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+async def signup(
+    user: UserCreate, 
+    background_tasks: BackgroundTasks, 
+    request: Request = None
+):
+    """
+    Register a new user account.
     
-    # Handle role assignment based on access code
-    if user.access_code:
-        if user.access_code == '090808':
-            user_dict["role"] = "admin"
-        elif user.access_code == '070763':
-            user_dict["role"] = "consultant"
-            if not user.specialization:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Specialization is required for consultants"
-                )
+    - **email**: Must be a valid email address
+    - **password**: Must be at least 8 characters long, contain at least one uppercase,
+      one lowercase, one digit, and one special character (@$!%*?&)
+    - **username**: Must be 3-50 characters long
+    - **mobile_number**: Must be in E.164 format (e.g., +1234567890)
+    - **date_of_birth**: Must be a valid date in the past
+    - **role**: Must be one of 'patient', 'consultant', or 'admin'
+    - **specialization**: Required if role is 'consultant'
+    - **access_code**: Required for 'admin' or 'consultant' roles
+    """
+    client_ip = request.client.host if request and request.client else "unknown"
     
-    # Create user in database
     try:
+        # Rate limiting check
+        await check_rate_limit(client_ip, "signup", MAX_SIGNUP_ATTEMPTS, SIGNUP_WINDOW)
+        
+        # Log incoming request
+        logger.info(f"Signup attempt - IP: {client_ip}, Email: {user.email}, Username: {user.username}")
+        
+        # Check if user already exists
+        existing_email = await db.users.find_one({"email": user.email.lower()})
+        if existing_email:
+            raise UserExistsError("email", user.email)
+            
+        existing_username = await db.users.find_one({"username": user.username.lower()})
+        if existing_username:
+            raise UserExistsError("username", user.username)
+        
+        # Validate role and access code
+        if user.role in ["admin", "consultant"] and not user.access_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Access code is required for {user.role} registration"
+            )
+            
+        if user.role == "consultant" and not user.specialization:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Specialization is required for consultant role"
+            )
+        
+        password_bytes = user.password.encode('utf-8')
+        hashed_pw = bcrypt.hashpw(password_bytes, bcrypt.gensalt(BCRYPT_SALT_ROUNDS)).decode('utf-8')
+        
+        # Prepare user data for database
+        user_dict = user.dict(exclude={"password", "access_code"})
+        
+        # Handle role assignment based on access code
+        if user.access_code:
+            if user.access_code == '090808':
+                user_dict["role"] = "admin"
+            elif user.access_code == '070763':
+                user_dict["role"] = "consultant"
+                if not user.specialization:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Specialization is required for consultants"
+                    )
+        
+        # Set hashed password and timestamps
+        user_dict.update({
+            "hashed_password": hashed_pw,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_active": True,
+            "is_verified": False
+        })
+        
+        # Create user in database
         logger.info(f"Creating user with data: {user_dict}")
         
         # Convert date to datetime for MongoDB before creating UserInDB
@@ -173,65 +246,138 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt, expire
 
-async def authenticate_user(username: str, password: str):
-    user = await db.users.find_one({"$or": [{"username": username}, {"email": username}]})
-    if not user:
-        return False
-    if not bcrypt.checkpw(password.encode('utf-8'), user["hashed_password"].encode('utf-8')):
-        return False
-    return user
+async def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
+    """
+    Authenticate a user with username/email and password.
+    
+    Args:
+        username: Username or email of the user
+        password: Plain text password
+        
+    Returns:
+        User document if authentication is successful, None otherwise
+    """
+    try:
+        # Case-insensitive search for username/email
+        user = await db.users.find_one({
+            "$or": [
+                {"username": username.lower()},
+                {"email": username.lower()}
+            ]
+        })
+        
+        if not user:
+            # Simulate password check to prevent timing attacks
+            bcrypt.checkpw(
+                b"dummy_password", 
+                bcrypt.gensalt().encode('utf-8')
+            )
+            return None
+            
+        # Verify password
+        if not bcrypt.checkpw(
+            password.encode('utf-8'), 
+            user["hashed_password"].encode('utf-8')
+        ):
+            return None
+            
+        return user
+        
+    except Exception as e:
+        logger.error(f"Authentication error for user {username}: {str(e)}", exc_info=True)
+        return None
 
 @router.post("/login", response_model=Token)
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     request: Request = None
 ):
-    # Log incoming request
-    logger.info(f"Login attempt for username: {form_data.username}")
+    """
+    OAuth2 compatible token login.
     
-    # Authenticate user
-    user = await authenticate_user(form_data.username, form_data.password)
-    if not user:
-        logger.warning(f"Failed login attempt for username: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+    - **username**: Your email or username
+    - **password**: Your password
+    
+    Returns an access token and user information.
+    """
+    client_ip = request.client.host if request and request.client else "unknown"
+    
+    try:
+        # Rate limiting check
+        await check_rate_limit(
+            f"{client_ip}:{form_data.username}", 
+            "login", 
+            max_attempts=5, 
+            window=LOGIN_WINDOW
         )
-    
-    # Check if user is active
-    if not user.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Inactive user"
+        
+        # Log login attempt
+        logger.info(f"Login attempt - IP: {client_ip}, Username: {form_data.username}")
+        
+        # Authenticate user
+        user = await authenticate_user(form_data.username, form_data.password)
+        if not user:
+            logger.warning(f"Failed login - IP: {client_ip}, Username: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Check if user is active
+        if not user.get("is_active", True):
+            logger.warning(f"Login attempt for inactive user - Username: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is inactive. Please contact support.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Check if email is verified
+        if not user.get("is_verified", False):
+            logger.warning(f"Login attempt with unverified email - Username: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Email not verified. Please check your email for verification instructions.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token, expires_at = create_access_token(
+            data={"sub": str(user["_id"])},
+            expires_delta=access_token_expires
         )
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token, expires_at = create_access_token(
-        data={"sub": str(user["_id"])},
-        expires_delta=access_token_expires
-    )
-    
-    # Prepare user data for response (exclude sensitive info)
-    user_data = {
-        "id": str(user["_id"]),
-        "username": user["username"],
-        "email": user["email"],
-        "first_name": user["first_name"],
-        "last_name": user["last_name"],
-        "role": user["role"],
-        "is_verified": user.get("is_verified", False)
-    }
-    
-    logger.info(f"Successful login for user: {user['username']}")
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user_data,
-        "expires_in": int(access_token_expires.total_seconds())
-    }
+        
+        # Prepare user data for response (exclude sensitive info)
+        user_data = {
+            "id": str(user["_id"]),
+            "username": user["username"],
+            "email": user["email"],
+            "first_name": user["first_name"],
+            "last_name": user["last_name"],
+            "role": user["role"],
+            "is_verified": user.get("is_verified", False)
+        }
+        
+        # Log successful login
+        logger.info(f"Successful login - User ID: {user_data['id']}, IP: {client_ip}")
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user_data,
+            "expires_in": int(access_token_expires.total_seconds())
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during login - IP: {client_ip}, Error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again later."
+        )
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
