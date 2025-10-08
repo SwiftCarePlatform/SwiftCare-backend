@@ -461,7 +461,6 @@ async def login_for_access_token(
             "user": user_data,
             "expires_in": int(access_token_expires.total_seconds())
         }
-        }
         
     except HTTPException:
         raise
