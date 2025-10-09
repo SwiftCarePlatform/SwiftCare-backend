@@ -374,8 +374,21 @@ async def login_for_access_token(
                 )
                 
             # Check if account is locked
-            if user.get("login_attempts", 0) >= 5 and user.get("lock_until", datetime.min) > datetime.utcnow():
-                lock_time = (user["lock_until"] - datetime.utcnow()).seconds // 60
+            login_attempts = user.get("login_attempts")
+            if login_attempts is None:
+                login_attempts = 0
+                # Initialize login_attempts in the database if it doesn't exist
+                from database import db
+                db.users.update_one(
+                    {"_id": user["_id"]},
+                    {"$set": {"login_attempts": 0}},
+                    upsert=False
+                )
+                
+            lock_until = user.get("lock_until") or datetime.min
+            
+            if login_attempts >= 5 and lock_until > datetime.utcnow():
+                lock_time = (lock_until - datetime.utcnow()).seconds // 60
                 raise LoginError(
                     status_code=status.HTTP_423_LOCKED,
                     error_code="account_locked",
