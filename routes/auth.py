@@ -373,27 +373,33 @@ async def login_for_access_token(
                     detail="Incorrect username or password"
                 )
                 
-            # Check if account is locked
+            # Initialize or get login_attempts
             login_attempts = user.get("login_attempts")
             if login_attempts is None:
                 login_attempts = 0
-                # Initialize login_attempts in the database if it doesn't exist
+                # Update database to initialize login_attempts
                 from database import db
                 db.users.update_one(
                     {"_id": user["_id"]},
                     {"$set": {"login_attempts": 0}},
                     upsert=False
                 )
-                
-            lock_until = user.get("lock_until") or datetime.min
             
-            if login_attempts >= 5 and lock_until > datetime.utcnow():
-                lock_time = (lock_until - datetime.utcnow()).seconds // 60
-                raise LoginError(
-                    status_code=status.HTTP_423_LOCKED,
-                    error_code="account_locked",
-                    detail=f"Account locked due to too many failed attempts. Try again in {lock_time} minutes."
-                )
+            # Safely get lock_until, defaulting to minimum datetime
+            lock_until = user.get("lock_until")
+            if not isinstance(lock_until, datetime):
+                lock_until = datetime.min
+            
+            # Check if account is locked
+            if login_attempts is not None and lock_until is not None:
+                current_time = datetime.utcnow()
+                if login_attempts >= 5 and lock_until > current_time:
+                    lock_time = (lock_until - current_time).seconds // 60
+                    raise LoginError(
+                        status_code=status.HTTP_423_LOCKED,
+                        error_code="account_locked",
+                        detail=f"Account locked due to too many failed attempts. Try again in {lock_time} minutes."
+                    )
             
             # Check if user is active
             if not user.get("is_active", True):
