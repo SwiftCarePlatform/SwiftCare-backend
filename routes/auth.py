@@ -320,7 +320,6 @@ async def login_for_access_token(
     - 400: Invalid request format
     - 401: Invalid credentials
     - 403: Account inactive, email not verified, or access denied
-    - 423: Account locked
     - 429: Too many login attempts
     - 500: Internal server error
     """
@@ -391,33 +390,14 @@ async def login_for_access_token(
                     detail="Please verify your email address before logging in. Check your inbox for the verification link."
                 )
                 
-            # Reset failed login attempts on successful login
+            # Update last login time
             await db.users.update_one(
                 {"_id": user["_id"]},
-                {"$set": {"login_attempts": 0, "last_login": datetime.utcnow()}}
+                {"$set": {"last_login": datetime.utcnow()}}
             )
             
         except LoginError:
-            # Update failed login attempts
-            if user and "_id" in user:
-                await db.users.update_one(
-                    {"_id": user["_id"]},
-                    [
-                        {
-                            "$set": {
-                                "login_attempts": {"$add": ["$login_attempts", 1]},
-                                "last_failed_attempt": datetime.utcnow(),
-                                "lock_until": {
-                                    "$cond": [
-                                        {"$gte": ["$login_attempts", 4]},  # After 5th failed attempt
-                                        {"$add": ["$$NOW", 30 * 60 * 1000]},  # Lock for 30 minutes
-                                        None
-                                    ]
-                                }
-                            }
-                        }
-                    ]
-                )
+            # Re-raise the login error without tracking failed attempts
             raise
         
         # Create access token
