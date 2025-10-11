@@ -373,14 +373,7 @@ async def login_for_access_token(
                     detail="Incorrect username or password"
                 )
                 
-            # Check if account is locked
-            if user.get("login_attempts", 0) >= 5 and user.get("lock_until", datetime.min) > datetime.utcnow():
-                lock_time = (user["lock_until"] - datetime.utcnow()).seconds // 60
-                raise LoginError(
-                    status_code=status.HTTP_423_LOCKED,
-                    error_code="account_locked",
-                    detail=f"Account locked due to too many failed attempts. Try again in {lock_time} minutes."
-                )
+            # Account lock check removed as per request
             
             # Check if user is active
             if not user.get("is_active", True):
