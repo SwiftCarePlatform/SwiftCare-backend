@@ -270,7 +270,7 @@ async def authenticate_user(username: str, password: str) -> Optional[Dict[str, 
             # Simulate password check to prevent timing attacks
             bcrypt.checkpw(
                 b"dummy_password", 
-                bcrypt.gensalt().encode('utf-8')
+                bcrypt.gensalt()
             )
             return None
             
