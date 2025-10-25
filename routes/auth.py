@@ -139,13 +139,26 @@ async def signup(
         # Log incoming request
         logger.info(f"Signup attempt - IP: {client_ip}, Email: {user.email}, Username: {user.username}")
         
-        # Check if user already exists
-        existing_email = await db.users.find_one({"email": user.email.lower()})
+        # Check if user already exists with case-insensitive search
+        existing_email = await db.users.find_one({
+            "$or": [
+                {"email": user.email.lower()},
+                {"email": {"$regex": f"^{user.email}$", "$options": "i"}}
+            ]
+        })
         if existing_email:
+            logger.warning(f"Signup attempt with existing email: {user.email}")
             raise UserExistsError("email", user.email)
             
-        existing_username = await db.users.find_one({"username": user.username.lower()})
+        # Check for existing username (case-insensitive)
+        existing_username = await db.users.find_one({
+            "$or": [
+                {"username": user.username.lower()},
+                {"username": {"$regex": f"^{user.username}$", "$options": "i"}}
+            ]
+        })
         if existing_username:
+            logger.warning(f"Signup attempt with existing username: {user.username}")
             raise UserExistsError("username", user.username)
         
         # Validate role and access code
@@ -277,7 +290,7 @@ async def authenticate_user(username: str, password: str) -> Optional[Dict[str, 
         # Verify password
         if not bcrypt.checkpw(
             password.encode('utf-8'), 
-            user["hashed_password"].encode('utf-8')
+            user["hashed_password"].encode('utf-8') if isinstance(user["hashed_password"], str) else user["hashed_password"]
         ):
             return None
             
