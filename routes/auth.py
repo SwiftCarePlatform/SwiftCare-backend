@@ -283,17 +283,27 @@ async def authenticate_user(username: str, password: str) -> Optional[Dict[str, 
             # Simulate password check to prevent timing attacks
             bcrypt.checkpw(
                 b"dummy_password", 
-                bcrypt.gensalt()  # gensalt() already returns bytes
+                bcrypt.gensalt()
             )
+            logger.warning(f"User not found: {username}")
             return None
+        
+        # Get the hashed password from the user document
+        hashed_password = user.get("hashed_password")
+        if not hashed_password:
+            logger.error(f"No hashed password found for user: {username}")
+            return None
+            
+        # Ensure hashed_password is in bytes
+        if isinstance(hashed_password, str):
+            hashed_password = hashed_password.encode('utf-8')
             
         # Verify password
-        if not bcrypt.checkpw(
-            password.encode('utf-8'), 
-            user["hashed_password"].encode('utf-8') if isinstance(user["hashed_password"], str) else user["hashed_password"]
-        ):
+        if not bcrypt.checkpw(password.encode('utf-8'), hashed_password):
+            logger.warning(f"Invalid password for user: {username}")
             return None
             
+        logger.info(f"Successfully authenticated user: {username}")
         return user
         
     except Exception as e:
