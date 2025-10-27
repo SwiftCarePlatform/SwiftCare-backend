@@ -36,12 +36,17 @@ from database import db, test_connection
 
 app = FastAPI(title="SwiftCare API")
 
-# CORS configuration (adjust origins in production)
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",  # Local development
+        "https://your-production-domain.com"  # Add your production domain here
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"]
 )
 
 # Add timezone middleware
