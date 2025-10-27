@@ -515,3 +515,4 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     # Convert ObjectId to string for JSON serialization
     user["id"] = str(user["_id"])
     return user
+    
