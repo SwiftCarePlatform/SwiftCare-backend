@@ -87,7 +87,7 @@ class UserInDB(UserBase):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     is_active: bool = True
-    is_verified: bool = False
+    is_verified: bool = True
 
     class Config:
         json_encoders = {ObjectId: str}
