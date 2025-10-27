@@ -92,13 +92,13 @@ class UserInDB(UserBase):
     class Config:
         json_encoders = {ObjectId: str}
         arbitrary_types_allowed = True
-        populate_by_name = True
+        validate_by_name = True
 
 class UserOut(UserBase):
     id: PyObjectId = Field(alias="_id")
 
     model_config = {
-        "populate_by_name": True,
+        "validate_by_name": True,
         "arbitrary_types_allowed": True,
         "json_encoders": {ObjectId: str}
     }
