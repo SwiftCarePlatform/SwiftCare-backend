@@ -406,14 +406,6 @@ async def login_for_access_token(
                     detail="This account has been deactivated. Please contact support for assistance."
                 )
             
-            # Check if email is verified
-            if not user.get("is_verified", False):
-                raise LoginError(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    error_code="email_not_verified",
-                    detail="Please verify your email address before logging in. Check your inbox for the verification link."
-                )
-                
             # Reset failed login attempts on successful login
             await db.users.update_one(
                 {"_id": user["_id"]},
